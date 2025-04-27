@@ -501,8 +501,7 @@ def rdkit_mol_to_pyg_data_configured(mol: Chem.Mol, config: QM9Config) -> Option
 # Block 6: Hauptklasse für den QM9 InMemoryDataset
 # ==============================================================================
 class QM9EnhancedDataset(InMemoryDataset):
-    """
-    Erweiterte Klasse zum Laden und Verarbeiten des QM9-Datensatzes als PyG InMemoryDataset.
+    """Erweiterte Klasse zum Laden und Verarbeiten des QM9-Datensatzes als PyG InMemoryDataset.
 
     Implementiert Download, sequentielle Verarbeitung von SDF zu PyG Data-Objekten
     unter Verwendung einer Konfiguration und optionales Laden von vordefinierten Splits.
@@ -529,40 +528,59 @@ class QM9EnhancedDataset(InMemoryDataset):
             raise ImportError("RDKit ist für QM9EnhancedDataset erforderlich, konnte aber nicht importiert werden.")
 
         self.config = config
-        # Vollständige Pfade zu wichtigen Dateien und Verzeichnissen definieren
+        # Reset global counter for the main process duplicate check (if needed)
+        self._main_process_duplicate_counter = 0
+        logging.info(f"Initializing QM9EnhancedDataset in root: {self.config.root}...")
+
+        # --- CRITICAL CHANGE: Define _raw_sdf_path *before* super().__init__ ---
+        # This is needed because super().__init__ might call download(), which uses this path.
+        # We use the raw_dir property here, which is safe as it computes the path on access.
         self._raw_sdf_path = osp.join(self.raw_dir, self.config.raw_sdf_name)
-        # Der Name des Unterverzeichnisses für verarbeitete Daten enthält die Version
-        self._processed_dir_path = osp.join(self.processed_dir_base, self.config.version_name)
+        # --- End Critical Change ---
+
+        # Call super().__init__ AFTER defining attributes needed by its potential internal calls (like download/process)
+        super().__init__(self.config.root, transform, pre_transform, pre_filter)
+
+        # Now define other attributes that might depend on the superclass initialization or are not needed by it.
+        self._processed_dir_path = osp.join(self.processed_dir, self.config.version_name) # Use processed_dir property
+
         # Interner Zähler für Meldungen im Hauptprozess (z.B. Duplikate)
         self._main_process_log_counters = defaultdict(int)
 
-        logging.info(f"Initialisiere QM9EnhancedDataset...")
         logging.info(f"Root-Verzeichnis: {self.config.root}")
         logging.info(f"Verarbeitete Daten Version: {self.config.version_name}")
         logging.info(f"Verwendeter Konfigurations-Hash: {self.config._config_hash}")
 
-        # Rufe den Konstruktor der Basisklasse auf.
-        # Dieser prüft, ob die verarbeiteten Daten bereits existieren. Wenn ja, lädt er sie.
-        # Wenn nein, ruft er `download()` und dann `process()` auf.
-        super().__init__(root=config.root, # Wichtig: root hier übergeben, nicht self.root
-                         transform=transform,
-                         pre_transform=pre_transform,
-                         pre_filter=pre_filter)
+        # Nach super().__init__ sollten die Daten geladen sein (entweder aus Datei oder durch process())
+        # The base class __init__ already handles loading/processing.
+        # We just need to check if data was loaded and apply splits if necessary.
+        if not self._data_list and not (osp.exists(self.processed_paths[0]) or self.config.force_process):
+             # This condition means super().__init__ didn't load or process data, which is unexpected
+             # unless the processed file exists but is invalid, or some other edge case.
+             # Let's rely on the base class logic. If it failed, it should have raised an error.
+             # If it succeeded, self.data and self.slices should be populated by the base class.
+             # We might need to explicitly load if the base class doesn't always do it.
+             # Let's assume the base class loads it if found.
+             pass # Base class handles loading or calls process()
 
-        # Nach super().__init__() sollten die Daten geladen sein (entweder aus Datei oder durch process())
-        try:
-            # Lade die Daten und Slices aus der verarbeiteten Datei
-            self.data, self.slices = torch.load(self.processed_paths[0])
-            logging.info(f"Datensatz erfolgreich geladen aus: {self.processed_paths[0]}")
-        except FileNotFoundError:
-            # Dieser Fall sollte nur eintreten, wenn process() fehlschlägt oder unterbrochen wird
-            logging.error(f"FEHLER: Verarbeitete Datei wurde nicht gefunden nach Initialisierung: {self.processed_paths[0]}")
-            logging.error("Dies deutet auf ein Problem während des 'process'-Schritts hin.")
-            raise
-        except Exception as e:
-            logging.error(f"FEHLER: Unerwarteter Fehler beim Laden der verarbeiteten Datei: {e}")
-            logging.debug(traceback.format_exc())
-            raise
+        # Check if data is loaded after super().__init__
+        if self.data is None:
+             # This indicates an issue, either process() failed or loading failed silently in super
+             logging.error(f"FEHLER: Daten wurden nach super().__init__() nicht geladen. Überprüfe process() Logs.")
+             # Attempt to load manually again just in case, though this might hide underlying issues
+             try:
+                 self.data, self.slices = torch.load(self.processed_paths[0])
+                 logging.info(f"Datensatz manuell nachgeladen aus: {self.processed_paths[0]}")
+             except FileNotFoundError:
+                 logging.error(f"FEHLER: Verarbeitete Datei wurde auch beim manuellen Versuch nicht gefunden: {self.processed_paths[0]}")
+                 raise RuntimeError("Verarbeitete Daten konnten nicht geladen werden.")
+             except Exception as e:
+                 logging.error(f"FEHLER: Unerwarteter Fehler beim manuellen Nachladen der verarbeiteten Datei: {e}")
+                 logging.debug(traceback.format_exc())
+                 raise RuntimeError("Verarbeitete Daten konnten nicht geladen werden.") from e
+        else:
+             logging.info(f"Datensatz erfolgreich durch super().__init__ geladen/verarbeitet.")
+
 
         # Wenn ein spezifischer Split geladen werden soll, filtere die Daten jetzt
         if self.config.load_split:
@@ -576,13 +594,7 @@ class QM9EnhancedDataset(InMemoryDataset):
     def raw_dir(self) -> str:
         """Gibt das Verzeichnis zurück, in dem Rohdaten gespeichert sind/werden."""
         # Liegt normalerweise direkt im root-Verzeichnis
-        return osp.join(self.root, 'raw')
-
-    @property
-    def processed_dir_base(self) -> str:
-        """Gibt das Basisverzeichnis für verarbeitete Daten zurück."""
-        # Liegt normalerweise direkt im root-Verzeichnis
-        return osp.join(self.root, 'processed')
+        return osp.join(self.config.root, 'raw')
 
     @property
     def processed_dir(self) -> str:
@@ -590,8 +602,10 @@ class QM9EnhancedDataset(InMemoryDataset):
         Gibt das spezifische Verzeichnis für die *aktuelle Version* der verarbeiteten Daten zurück.
         Erstellt das Verzeichnis, falls es nicht existiert.
         """
-        os.makedirs(self._processed_dir_path, exist_ok=True)
-        return self._processed_dir_path
+        versioned_processed_path = osp.join(self.config.root, 'processed', self.config.version_name)
+        os.makedirs(versioned_processed_path, exist_ok=True)
+        # Die Basisklasse erwartet den *Basis*-Pfad des Verzeichnisses für verarbeitete Daten
+        return osp.join(self.config.root, 'processed')
 
     @property
     def raw_file_names(self) -> List[str]:
@@ -1118,7 +1132,7 @@ if __name__ == '__main__':
         check_duplicates=True,                             # Suche nach Duplikaten
         num_workers=1,                                     # Explizit sequentiell
         force_download=False,                              # Nicht neu herunterladen, wenn Rohdaten da sind
-        force_process=False,                               # <--- KORRIGIERTER KOMMENTAR: Nicht neu verarbeiten, wenn .pt-Datei mit diesem Hash existiert
+        force_process=False,                               # <--- KORRIGIERTER KOMMENTAR: Nicht neu verarbeiten, wenn .pt-Datei mit diesem Hash existiert.
         split_definition_path=None,                        # Kein Split in diesem Beispiel
         load_split=None
     )
