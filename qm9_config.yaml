@@ -1,0 +1,45 @@
+# Beispiel Konfigurationsdatei für QM9 Verarbeitung
+
+# --- Pfade und Versionierung ---
+root_dir: 'data/QM9_Output'  # Wo alles gespeichert wird
+version_name: "parallel_stdscale_v1" # Unterordner für diese Version
+
+# --- Molekülverarbeitung ---
+use_h_atoms: True
+allowed_atom_symbols: ['H', 'C', 'N', 'O', 'F']
+allowed_bond_type_names: ['SINGLE', 'DOUBLE', 'TRIPLE', 'AROMATIC']
+
+# --- Optionale Features ---
+add_atomic_mass: False
+add_formal_charge: True # Beispiel: Formalladung aktivieren
+add_hybridization: True # Beispiel: Hybridisierung aktivieren
+add_is_aromatic_atom: False
+add_is_in_ring_atom: False
+add_is_conjugated_bond: False
+add_is_in_ring_bond: False
+
+# --- Zielvariablen (Targets) ---
+# target_keys_to_load: null # null oder weglassen = alle laden
+target_keys_to_load: ['mu', 'alpha', 'HOMO', 'LUMO', 'gap', 'U0'] # Beispiel: Nur einige laden
+
+# --- Zielwert-Skalierung ---
+target_scaling:
+  method: 'standardize' # Aktiviere Standardisierung
+  # params werden automatisch berechnet und ignoriert, wenn hier angegeben
+
+# --- Download (normalerweise nicht ändern) ---
+qm9_url: 'https://deepchemdata.s3-us-west-1.amazonaws.com/datasets/gdb9.tar.gz'
+raw_archive_name: 'gdb9.tar.gz'
+raw_sdf_name: 'gdb9.sdf'
+
+# --- Verarbeitung ---
+num_workers: null # null = alle CPUs verwenden
+check_duplicates: True
+processing_chunksize: 500 # Kleinere Chunks für Test
+
+# --- Aufteilung (Splitting) ---
+# Pfad zur Split-Datei (z.B. erstellt durch ein anderes Skript)
+# split_definition_path: 'data/qm9_splits.pt'
+split_definition_path: null # Kein Split anwenden
+
+# load_split: Wird über CLI gesteuert (--load_split train/val/test)
