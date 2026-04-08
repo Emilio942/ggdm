@@ -95,7 +95,21 @@ if RDKIT_AVAILABLE:
     # Info-Meldung kommt nach Logging-Setup in main()
 
 # ==============================================================================
-# Block 3: Konstanten und Mappings
+# Block 4: Future Model Implementation (GGDM)
+# ==============================================================================
+# See GGDM_RESEARCH.md for the mathematical foundations and the 
+# current research questions for Carlin regarding E(3)-equivariant 
+# diffusion kernels and joint coordinate-categorical posterior derivations.
+
+# class GGDM(torch.nn.Module):
+#     """
+#     Implementation of Geometric Graph Diffusion Model.
+#     TODO: Integrate transition kernels based on Carlin's response.
+#     """
+#     pass
+
+# ==============================================================================
+# Block 5: Mappings und Hilfsfunktionen
 # ==============================================================================
 BOND_TYPE_TO_NAME: Dict[BT, str] = {
     BT.SINGLE: 'SINGLE', BT.DOUBLE: 'DOUBLE', BT.TRIPLE: 'TRIPLE', BT.AROMATIC: 'AROMATIC'
@@ -141,6 +155,7 @@ class QM9Config:
     add_is_in_ring_atom: bool = False
     add_is_conjugated_bond: bool = False
     add_is_in_ring_bond: bool = False
+    add_edge_distances: bool = True # Neu: Distanzen als Kanten-Feature
 
     # --- Zielvariablen (Targets) ---
     all_available_targets: List[str] = field(default_factory=lambda: [
@@ -306,9 +321,29 @@ def worker_process_molecule(mol_data: Tuple[int, str]) -> ProcessingResult:
             onehot = torch.zeros(len(thread_local_config.allowed_atom_symbols), dtype=torch.float)
             onehot[thread_local_config._atom_symbol_map[symbol]] = 1.0
             features = [onehot]
-            # Optionale Features... (Code hier vereinfacht, Logik wie im Original)
-            if thread_local_config.add_atomic_mass: features.append(torch.tensor([atom.GetMass()], dtype=torch.float))
-            # ... andere optionale Features ...
+            
+            # Optionale Atom-Features
+            if thread_local_config.add_atomic_mass:
+                features.append(torch.tensor([atom.GetMass()], dtype=torch.float))
+            if thread_local_config.add_formal_charge:
+                features.append(torch.tensor([atom.GetFormalCharge()], dtype=torch.float))
+            if thread_local_config.add_hybridization:
+                hybridization = atom.GetHybridization()
+                hybridization_map = {
+                    Chem.HybridizationType.SP: 0, Chem.HybridizationType.SP2: 1,
+                    Chem.HybridizationType.SP3: 2, Chem.HybridizationType.SP3D: 3,
+                    Chem.HybridizationType.SP3D2: 4, Chem.HybridizationType.UNSPECIFIED: 5,
+                    Chem.HybridizationType.OTHER: 6
+                }
+                hybridization_onehot = torch.zeros(7, dtype=torch.float)
+                h_idx = hybridization_map.get(hybridization, 5)
+                hybridization_onehot[h_idx] = 1.0
+                features.append(hybridization_onehot)
+            if thread_local_config.add_is_aromatic_atom:
+                features.append(torch.tensor([1.0 if atom.GetIsAromatic() else 0.0], dtype=torch.float))
+            if thread_local_config.add_is_in_ring_atom:
+                features.append(torch.tensor([1.0 if atom.IsInRing() else 0.0], dtype=torch.float))
+                
             atom_features_list.append(torch.cat(features))
         x_tensor = torch.stack(atom_features_list, dim=0)
 
@@ -323,7 +358,20 @@ def worker_process_molecule(mol_data: Tuple[int, str]) -> ProcessingResult:
                 onehot = torch.zeros(len(thread_local_config._allowed_bond_types_internal), dtype=torch.float)
                 onehot[thread_local_config._bond_type_map[bond_type]] = 1.0
                 features = [onehot]
-                # ... andere optionale Bindungs-Features ...
+                
+                # Optionale Bindungs-Features
+                if thread_local_config.add_is_conjugated_bond:
+                    features.append(torch.tensor([1.0 if bond.GetIsConjugated() else 0.0], dtype=torch.float))
+                if thread_local_config.add_is_in_ring_bond:
+                    features.append(torch.tensor([1.0 if bond.IsInRing() else 0.0], dtype=torch.float))
+                
+                # Neu: Euklidische Distanz berechnen
+                if thread_local_config.add_edge_distances:
+                    p1 = pos_tensor[bond.GetBeginAtomIdx()]
+                    p2 = pos_tensor[bond.GetEndAtomIdx()]
+                    dist = torch.norm(p1 - p2, p=2).view(1)
+                    features.append(dist)
+                
                 vec = torch.cat(features)
                 start, end = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
                 edge_indices_list.extend([(start, end), (end, start)])
@@ -334,8 +382,11 @@ def worker_process_molecule(mol_data: Tuple[int, str]) -> ProcessingResult:
             edge_attr = torch.stack(edge_features_list, dim=0)
         else:
             edge_index = torch.empty((2, 0), dtype=torch.long)
-            # TODO: Korrekte Dimenstion für leere edge_attr berechnen
-            expected_edge_dim = len(thread_local_config._allowed_bond_types_internal) # + optionale
+            # Berechne die korrekte Dimension für leere edge_attr
+            expected_edge_dim = len(thread_local_config._allowed_bond_types_internal)
+            if thread_local_config.add_is_conjugated_bond: expected_edge_dim += 1
+            if thread_local_config.add_is_in_ring_bond: expected_edge_dim += 1
+            if thread_local_config.add_edge_distances: expected_edge_dim += 1
             edge_attr = torch.empty((0, expected_edge_dim), dtype=torch.float)
 
         # --- 4. Zielwerte ---

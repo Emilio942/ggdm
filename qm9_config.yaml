@@ -17,6 +17,7 @@ add_is_aromatic_atom: False
 add_is_in_ring_atom: False
 add_is_conjugated_bond: False
 add_is_in_ring_bond: False
+add_edge_distances: True # Neu: Distanzen als Kanten-Feature
 
 # --- Zielvariablen (Targets) ---
 # target_keys_to_load: null # null oder weglassen = alle laden
