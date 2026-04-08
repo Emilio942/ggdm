@@ -29,7 +29,7 @@ def test_smoke_ggdm():
     # 3. Test: Forward Pass (Training-Modus)
     print("Teste Forward Pass...")
     with torch.no_grad():
-        score_x, score_h = model(x, h, t, edge_index)
+        score_x, score_h = model(x, h, t, edge_index, node_batch=None)
     
     print(f"Score X Shape: {score_x.shape} (erwartet [{num_atoms}, 3])")
     print(f"Score H Shape: {score_h.shape} (erwartet [{num_atoms}, {num_atom_types}])")

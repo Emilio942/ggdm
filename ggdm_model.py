@@ -70,7 +70,7 @@ class GGDM(nn.Module):
         
         return X_next, score_h
 
-    def forward(self, x, h, t, edge_index):
+    def forward(self, x, h, t, edge_index, node_batch=None):
         """Forward pass zur Score-Berechnung (fürs Training)"""
-        return self.score_net(x, h, t, edge_index)
+        return self.score_net(x, h, t, edge_index, node_batch=node_batch)
 

@@ -471,19 +471,18 @@ class QM9EnhancedDataset(InMemoryDataset):
                  pre_filter: Optional[Callable] = None):
 
         self.config = config # Die geladene und validierte Konfiguration
-        self._raw_sdf_path = osp.join(self.raw_dir, self.config.raw_sdf_name)
-        self._processed_base_dir = osp.join(self.root, 'processed')
+        self._raw_sdf_path = osp.join(self.config.root_dir, 'raw', self.config.raw_sdf_name)
+        self._processed_base_dir = osp.join(self.config.root_dir, 'processed')
         self._processed_version_dir = osp.join(self._processed_base_dir, self.config.version_name)
-        self._processed_file_path = osp.join(self.processed_dir, f'data_{self.config._config_hash}.pt')
+        self._processed_file_path = osp.join(self._processed_version_dir, f'data_{self.config._config_hash}.pt')
         self._metadata_file_path = osp.splitext(self._processed_file_path)[0] + '_meta.json'
         self._error_file_path = osp.splitext(self._processed_file_path)[0] + '_errors.json'
 
-        logging.info(f"Initialisiere QM9EnhancedDataset in root: {self.root}")
+        logging.info(f"Initialisiere QM9EnhancedDataset in root: {self.config.root_dir}")
         logging.info(f"Version: {self.config.version_name}, Hash: {self.config._config_hash}")
 
         # WICHTIG: Rufe super().__init__ auf.
-        # root wird hier benötigt, processed_dir etc. werden über Properties gesteuert.
-        super().__init__(root=self.root, # Basisverzeichnis
+        super().__init__(root=self.config.root_dir, 
                          transform=transform,
                          pre_transform=pre_transform,
                          pre_filter=pre_filter)
@@ -518,11 +517,6 @@ class QM9EnhancedDataset(InMemoryDataset):
 
         logging.info(f"Initialisierung von QM9EnhancedDataset abgeschlossen. Datensatzgröße: {len(self)}")
 
-
-    @property
-    def root(self) -> str:
-        # Überschreibe root, um sicherzustellen, dass es auf config.root_dir zeigt
-        return self.config.root_dir
 
     @property
     def raw_dir(self) -> str:
@@ -592,8 +586,12 @@ class QM9EnhancedDataset(InMemoryDataset):
         except Exception as e:
             log_error(f"Download/Extraktion fehlgeschlagen: {e}", exc_info=True)
             # Cleanup
-            if osp.exists(archive_path): try: os.remove(archive_path) catch: pass
-            if osp.exists(target_sdf_path): try: os.remove(target_sdf_path) catch: pass
+            if osp.exists(archive_path):
+                try: os.remove(archive_path)
+                except: pass
+            if osp.exists(target_sdf_path):
+                try: os.remove(target_sdf_path)
+                except: pass
             raise RuntimeError("Daten-Download/Extraktion fehlgeschlagen.") from e
 
 
@@ -774,7 +772,9 @@ class QM9EnhancedDataset(InMemoryDataset):
             logging.info("Speichern der verarbeiteten Daten abgeschlossen.")
         except Exception as e:
             log_error(f"FEHLER beim Speichern der verarbeiteten Daten: {e}", exc_info=True)
-            if osp.exists(self.processed_paths[0]): try: os.remove(self.processed_paths[0]) catch: pass
+            if osp.exists(self.processed_paths[0]):
+                try: os.remove(self.processed_paths[0])
+                except: pass
             raise RuntimeError("Speichern der verarbeiteten Daten fehlgeschlagen.") from e
 
         # --- 8. Metadaten und Fehler speichern ---
@@ -791,9 +791,12 @@ class QM9EnhancedDataset(InMemoryDataset):
         logging.info(f"Speichere Metadaten nach: {self._metadata_file_path}...")
 
         # Sammle Versionen etc. (wie zuvor)
-        try: rdkit_version = Chem.__version__ catch: rdkit_version = "N/A"
-        try: pyg_version = torch_geometric.__version__ catch: pyg_version = "N/A"
-        try: import platform; py_version = platform.python_version() catch: py_version = "N/A"
+        try: rdkit_version = Chem.__version__
+        except: rdkit_version = "N/A"
+        try: pyg_version = torch_geometric.__version__
+        except: pyg_version = "N/A"
+        try: import platform; py_version = platform.python_version()
+        except: py_version = "N/A"
 
         # Konfiguration für Metadaten vorbereiten (ohne interne Felder)
         serializable_config = {k: v for k, v in asdict(self.config).items() if not k.startswith('_')}
@@ -806,8 +809,10 @@ class QM9EnhancedDataset(InMemoryDataset):
         # Feature-Dimensionen (aus dem ersten gültigen Datenobjekt)
         feature_dims = {'node': -1, 'edge': -1}
         if self.data and hasattr(self.data, 'x') and hasattr(self.data, 'edge_attr'):
-            try: feature_dims['node'] = self.data.x.shape[1] catch: pass
-            try: feature_dims['edge'] = self.data.edge_attr.shape[1] catch: pass
+            try: feature_dims['node'] = self.data.x.shape[1]
+            except: pass
+            try: feature_dims['edge'] = self.data.edge_attr.shape[1]
+            except: pass
 
 
         metadata = {
@@ -852,7 +857,8 @@ class QM9EnhancedDataset(InMemoryDataset):
             logging.info("Keine Verarbeitungsfehler aufgetreten.")
             # Lösche alte Fehlerdatei, falls vorhanden
             if osp.exists(self._error_file_path):
-                 try: os.remove(self._error_file_path) catch: pass
+                 try: os.remove(self._error_file_path)
+                 except: pass
             return
 
         logging.warning(f"Speichere {len(error_list)} Verarbeitungsfehler nach: {self._error_file_path}...")

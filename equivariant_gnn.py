@@ -13,7 +13,6 @@ class EGNN_Layer(nn.Module):
         self.hidden_dim = hidden_dim
         
         # Edge Message Network: phi_e
-        # Input: h_i, h_j, squared distance, edge_attr
         self.edge_mlp = nn.Sequential(
             nn.Linear(hidden_dim * 2 + 1 + edge_dim, hidden_dim),
             act_fn,
@@ -22,27 +21,28 @@ class EGNN_Layer(nn.Module):
         )
         
         # Coordinate Update Network: phi_x
-        # Berechnet die skalare Kraft, die entlang des Vektors (x_i - x_j) wirkt
         self.coord_mlp = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             act_fn,
-            nn.Linear(hidden_dim, 1)
+            nn.Linear(hidden_dim, 1, bias=False)
         )
         
         # Node Update Network: phi_h
-        # Input: h_i, aggregierte Messages m_i
         self.node_mlp = nn.Sequential(
             nn.Linear(hidden_dim * 2, hidden_dim),
             act_fn,
             nn.Linear(hidden_dim, hidden_dim)
         )
+        
+        self.layer_norm = nn.LayerNorm(hidden_dim)
 
     def forward(self, h, x, edge_index, edge_attr=None):
         row, col = edge_index
         
         # 1. Berechne relative Vektoren und Abstände
-        coord_diff = x[row] - x[col]                  # [num_edges, 3]
-        radial = torch.sum(coord_diff**2, dim=1, keepdim=True) # [num_edges, 1]
+        coord_diff = x[row] - x[col] 
+        dist = torch.norm(coord_diff, dim=1, keepdim=True)
+        radial = dist**2
         
         # 2. Berechne Messages für Kanten
         if edge_attr is not None:
@@ -50,14 +50,18 @@ class EGNN_Layer(nn.Module):
         else:
             edge_input = torch.cat([h[row], h[col], radial], dim=1)
             
-        m_ij = self.edge_mlp(edge_input) # [num_edges, hidden_dim]
+        m_ij = self.edge_mlp(edge_input) 
         
         # 3. Koordinaten-Update (Äquivariant!)
-        # Die Kraft wirkt zentrisch entlang coord_diff
-        force_scalar = self.coord_mlp(m_ij) # [num_edges, 1]
-        force_vector = coord_diff * force_scalar # [num_edges, 3]
+        # Stabilisierung durch Normalisierung des Vektors und Bounding der Kraft
+        force_scalar = self.coord_mlp(m_ij)
+        # Bounding: tanh verhindert explosive Updates
+        force_scalar = torch.tanh(force_scalar) * 0.1 
         
-        # Aggregation der Kräfte auf die Knoten
+        # Normalisierter Richtungsvektor
+        norm_diff = coord_diff / (dist + 1e-8)
+        force_vector = norm_diff * force_scalar
+        
         x_update = torch.zeros_like(x)
         x_update.index_add_(0, row, force_vector)
         x_new = x + x_update
@@ -68,6 +72,7 @@ class EGNN_Layer(nn.Module):
         
         node_input = torch.cat([h, m_i], dim=1)
         h_new = h + self.node_mlp(node_input)
+        h_new = self.layer_norm(h_new)
         
         return h_new, x_new
 
@@ -112,20 +117,26 @@ class EquivariantScoreNetwork(nn.Module):
             nn.Linear(hidden_dim, 1)
         )
 
-    def forward(self, x_t, h_t, t, edge_index):
+    def forward(self, x_t, h_t, t, edge_index, node_batch=None):
         """
         x_t: [N, 3] Koordinaten
         h_t: [N] Atom-Typ-Indizes
         t: [B, 1] Diffusion Time (für Batch)
-        edge_index: [2, E] Adjazenzmatrix (z.B. fully connected für kleine Moleküle)
+        edge_index: [2, E] Adjazenzmatrix
+        node_batch: [N] Index, welcher Knoten zu welchem Graphen gehört
         """
         # Node Features initialisieren
         h = self.atom_embedding(h_t) # [N, hidden_dim]
         
-        # Zeit-Embedding addieren (vereinfacht: gleiche Zeit für alle Knoten)
-        t_emb = self.time_mlp(t)
-        # Wir fügen t_emb zu den Knoten hinzu. In echtem PyG nimmt man batch.
-        h = h + t_emb.expand_as(h) 
+        # Zeit-Embedding addieren
+        t_emb = self.time_mlp(t) # [B, hidden_dim]
+        
+        if node_batch is not None:
+            # Expand t_emb to match h using node_batch
+            h = h + t_emb[node_batch]
+        else:
+            # Fallback für Single Molecule
+            h = h + t_emb.expand_as(h) 
         
         # Message Passing durch EGNN
         # Wir behalten das initiale x, da wir nur den Gradienten (Score) vorhersagen wollen
